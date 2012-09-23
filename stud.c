@@ -90,16 +90,30 @@
 #endif
 #endif
 
+#define TCP_PROXY_LINE_MAX_SIZE 128
+
 /* Globals */
 static struct ev_loop *loop;
 static struct addrinfo *backaddr;
 static pid_t master_pid;
-static ev_io listener;
-static int listener_socket;
+//FIXME: Does not matter that there is only one default context?
+//FIXME: Added X-Forwarded-For ?
+#define LISTENER_SOCKET_CHECK 0x1F2E3D4C
+typedef struct listener_socket_desc {
+    ev_io listener;
+    int fd;
+    char *tcp_proxy_line_fmt;
+    unsigned check;  /* Always set to LISTENER_SOCKET_CHECKER */
+} listener_socket_desc;
+listener_socket_desc *listener_sockets;
 static int child_num;
 static pid_t *child_pids;
 static SSL_CTX *default_ctx;
 static SSL_SESSION *client_session;
+
+#ifdef USE_SHARED_CACHE
+#error "Shared cache not tested with Hagrid's extensions"
+#endif
 
 #ifdef USE_SHARED_CACHE
 static ev_io shcupd_listener;
@@ -111,8 +125,6 @@ static unsigned char shared_secret[SHA_DIGEST_LENGTH];
 long openssl_version;
 int create_workers;
 stud_config *CONFIG;
-
-static char tcp_proxy_line[128] = "";
 
 /* What agent/state requests the shutdown--for proper half-closed
  * handling */
@@ -160,6 +172,7 @@ typedef struct proxystate {
 
     ev_io ev_proxy;                     /* proxy read event */
 
+    int index;                          /* Index to listener_sockets[.]  */
     int fd_up;                          /* Upstream (client) socket */
     int fd_down;                        /* Downstream (backend) socket */
 
@@ -187,11 +200,26 @@ typedef struct proxystate {
 
 #define NULL_DEV "/dev/null"
 
+static void fail(const char* s) {
+    perror(s);
+    exit(1);
+}
+
+void die (char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+
+    exit(1);
+}
+
 /* Set a file descriptor (socket) to non-blocking mode */
 static void setnonblocking(int fd) {
     int flag = 1;
 
-    assert(ioctl(fd, FIONBIO, &flag) == 0);
+    if (ioctl(fd, FIONBIO, &flag) == -1)
+        die("Cannot switch fd %d to non-blocking mode : %m", fd);
 }
 
 /* set a tcp socket to use TCP Keepalive */
@@ -210,20 +238,6 @@ static void settcpkeepalive(int fd) {
         ERR("Error setting TCP_KEEPIDLE on client socket: %s", strerror(errno));
     }
 #endif
-}
-
-static void fail(const char* s) {
-    perror(s);
-    exit(1);
-}
-
-void die (char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    va_end(args);
-
-    exit(1);
 }
 
 #ifndef OPENSSL_NO_DH
@@ -264,6 +278,31 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
     return 0;
 }
 #endif /* OPENSSL_NO_DH */
+
+static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct sockaddr *dst, size_t *p_dst_size, const int index) {
+    switch (src->sa_family) {
+    case AF_INET: {
+        if (sizeof(struct sockaddr_in) > *p_dst_size)
+            die("Socket addr mischmasch");
+        size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in);
+        assert(src_size == dst_size);
+        memcpy(dst, src, dst_size);
+        ((struct sockaddr_in*)dst)->sin_port = htons( ntohs(((struct sockaddr_in*)dst)->sin_port) + index );
+        }
+        break;
+    case AF_INET6: {
+        if (sizeof(struct sockaddr_in6) > *p_dst_size)
+            die("Socket addr mischmasch");
+        size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in6);
+        assert(src_size == dst_size);
+        memcpy(dst, src, dst_size);
+        ((struct sockaddr_in6*)dst)->sin6_port = htons( ntohs(((struct sockaddr_in6*)dst)->sin6_port) + index );
+        }
+        break;
+    default:
+        die("Unknown address family");
+    }
+}
 
 /* This callback function is executed while OpenSSL processes the SSL
  * handshake and does SSL record layer stuff.  It's used to trap
@@ -774,37 +813,48 @@ void init_openssl() {
     }
 }
 
-static void prepare_proxy_line(struct sockaddr* ai_addr) {
-    tcp_proxy_line[0] = 0;
+static char *prepare_proxy_line(struct sockaddr* ai_addr) {
     char tcp6_address_string[INET6_ADDRSTRLEN];
+    char *fmt = NULL;
+    ssize_t res_snprintf;
+    char buf[TCP_PROXY_LINE_MAX_SIZE] = "";
 
-    if (ai_addr->sa_family == AF_INET) {
+    if (!CONFIG->WRITE_PROXY_LINE)
+        return NULL;
+    else if (ai_addr->sa_family == AF_INET) {
         struct sockaddr_in* addr = (struct sockaddr_in*)ai_addr;
-        size_t res = snprintf(tcp_proxy_line,
-                sizeof(tcp_proxy_line),
+        res_snprintf = snprintf(buf, sizeof(buf),
                 "PROXY %%s %%s %s %%hu %hu\r\n",
                 inet_ntoa(addr->sin_addr),
                 ntohs(addr->sin_port));
-        assert(res < sizeof(tcp_proxy_line));
     }
     else if (ai_addr->sa_family == AF_INET6 ) {
-      struct sockaddr_in6* addr = (struct sockaddr_in6*)ai_addr;
-      inet_ntop(AF_INET6,&(addr->sin6_addr),tcp6_address_string,INET6_ADDRSTRLEN);
-      size_t res = snprintf(tcp_proxy_line,
-                            sizeof(tcp_proxy_line),
-                            "PROXY %%s %%s %s %%hu %hu\r\n",
-                            tcp6_address_string,
-                            ntohs(addr->sin6_port));
-      assert(res < sizeof(tcp_proxy_line));
+        struct sockaddr_in6* addr = (struct sockaddr_in6*)ai_addr;
+        inet_ntop(AF_INET6,&(addr->sin6_addr),tcp6_address_string,INET6_ADDRSTRLEN);
+        res_snprintf = snprintf(buf, sizeof(buf),
+                 "PROXY %%s %%s %s %%hu %hu\r\n",
+                 tcp6_address_string,
+                 ntohs(addr->sin6_port));
     }
     else {
         ERR("The --write-proxy mode is not implemented for this address family.\n");
         exit(1);
     }
+
+    if(res_snprintf < 0 || (size_t)res_snprintf >= sizeof(buf))
+        die("Cannot create proxy line : %m");
+    fmt = malloc(res_snprintf + 1);
+    if (!fmt)
+        die("Cannot allocate memory for proxy line : %m");
+    memcpy(fmt, buf, res_snprintf + 1);
+    return fmt;
 }
 
 /* Create the bound socket in the parent process */
-static int create_main_socket() {
+static void create_main_sockets() {
+    listener_sockets = malloc(CONFIG->MULTI*sizeof(*listener_sockets));
+    bzero(listener_sockets, CONFIG->MULTI*sizeof(*listener_sockets));
+
     struct addrinfo *ai, hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -816,36 +866,39 @@ static int create_main_socket() {
         ERR("{getaddrinfo}: [%s]\n", gai_strerror(gai_err));
         exit(1);
     }
+    for (int i = 0; i < CONFIG->MULTI; ++i) {
+        listener_sockets[i].check = LISTENER_SOCKET_CHECK;
+        int s = listener_sockets[i].fd = socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
 
-    int s = socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
+        if (s == -1)
+          fail("{socket: main}");
 
-    if (s == -1)
-      fail("{socket: main}");
-
-    int t = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &t, sizeof(int));
+        int t = 1;
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &t, sizeof(int));
 #ifdef SO_REUSEPORT
-    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &t, sizeof(int));
+        setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &t, sizeof(int));
 #endif
-    setnonblocking(s);
+        setnonblocking(s);
 
-    if (bind(s, ai->ai_addr, ai->ai_addrlen)) {
-        fail("{bind-socket}");
-    }
+        struct sockaddr_storage addr;
+        size_t addr_size = sizeof(addr);
+        addr_inc_port(ai->ai_addr, ai->ai_addrlen, (struct sockaddr*)&addr, &addr_size, i);
+        if (bind(s, (struct sockaddr*)&addr, addr_size)) {
+            fail("{bind-socket}");
+        }
 
 #ifndef NO_DEFER_ACCEPT
 #if TCP_DEFER_ACCEPT
-    int timeout = 1;
-    setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &timeout, sizeof(int) );
+        int timeout = 1;
+        setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &timeout, sizeof(int) );
 #endif /* TCP_DEFER_ACCEPT */
 #endif
 
-    prepare_proxy_line(ai->ai_addr);
+        listener_sockets[i].tcp_proxy_line_fmt = prepare_proxy_line((struct sockaddr*)&addr);
 
+        listen(s, CONFIG->BACKLOG);
+    }
     freeaddrinfo(ai);
-    listen(s, CONFIG->BACKLOG);
-
-    return s;
 }
 
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
@@ -918,10 +971,14 @@ static void handle_socket_errno(proxystate *ps, int backend) {
         perror("{backend} [errno]");
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
+
 /* Start connect to backend */
 static void start_connect(proxystate *ps) {
     int t = 1;
-    t = connect(ps->fd_down, backaddr->ai_addr, backaddr->ai_addrlen);
+    struct sockaddr_storage addr;
+    size_t size = sizeof(addr);
+    addr_inc_port(backaddr->ai_addr, backaddr->ai_addrlen, (struct sockaddr*)&addr, &size, ps->index);
+    t = connect(ps->fd_down, (struct sockaddr*)&addr, size);
     if (t == 0 || errno == EINPROGRESS || errno == EINTR) {
         ev_io_start(loop, &ps->ev_w_connect);
         return ;
@@ -1070,11 +1127,14 @@ static void end_handshake(proxystate *ps) {
             char *ring_pnt = ringbuffer_write_ptr(&ps->ring_ssl2clear);
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
+            assert(ps->index < CONFIG->MULTI);
+            char *fmt = listener_sockets[ps->index].tcp_proxy_line_fmt;
+            assert(fmt);
             if(ps->remote_ip.ss_family == AF_INET) {
                struct sockaddr_in* addr = (struct sockaddr_in*)&ps->remote_ip;
                written = snprintf(ring_pnt,
                                   RING_DATA_LEN,
-                                  tcp_proxy_line,
+                                  fmt,
                                   "TCP4",
                                   inet_ntoa(addr->sin_addr),
                                   ntohs(addr->sin_port));
@@ -1084,7 +1144,7 @@ static void end_handshake(proxystate *ps) {
                         inet_ntop(AF_INET6,&(addr->sin6_addr),tcp6_address_string,INET6_ADDRSTRLEN);
                         written = snprintf(ring_pnt,
                                   RING_DATA_LEN,
-                                  tcp_proxy_line,
+                                  fmt,
                                   "TCP6",
                                   tcp6_address_string,
                                   ntohs(addr->sin6_port));
@@ -1132,6 +1192,7 @@ static void end_handshake(proxystate *ps) {
 static void client_proxy_proxy(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     int t;
+    char tcp_proxy_line[TCP_PROXY_LINE_MAX_SIZE] = "";  // Added by hagrid
     char *proxy = tcp_proxy_line, *end = tcp_proxy_line + sizeof(tcp_proxy_line);
     proxystate *ps = (proxystate *)w->data;
     BIO *b = SSL_get_rbio(ps->ssl);
@@ -1334,6 +1395,12 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
+    listener_socket_desc *listener_socket = (void*)w;
+    if (listener_socket->check != LISTENER_SOCKET_CHECK) {
+        die("Socket descriptor mischmasch");
+    }
+    int index = listener_socket - listener_sockets;
+
     int back = create_back_socket();
 
     if (back == -1) {
@@ -1354,6 +1421,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
 
+    ps->index = index;
     ps->fd_up = client;
     ps->fd_down = back;
     ps->ssl = ssl;
@@ -1404,10 +1472,12 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
     (void) revents;
     pid_t ppid = getppid();
     if (ppid != master_pid) {
-        ERR("{core} Process %d detected parent death, closing listener socket.\n", child_num);
+        ERR("{core} Process %d detected parent death, closing listener sockets.\n", child_num);
         ev_timer_stop(loop, w);
-        ev_io_stop(loop, &listener);
-        close(listener_socket);
+        for (int i = 0; i < CONFIG->MULTI; ++i) {
+            ev_io_stop(loop, &listener_sockets[i].listener);
+            close(listener_sockets[i].fd);
+        }
     }
 
 }
@@ -1539,9 +1609,11 @@ static void handle_connections() {
     ev_timer_init(&timer_ppid_check, check_ppid, 1.0, 1.0);
     ev_timer_start(loop, &timer_ppid_check);
 
-    ev_io_init(&listener, (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_socket, EV_READ);
-    listener.data = default_ctx;
-    ev_io_start(loop, &listener);
+    for (int i = 0; i < CONFIG->MULTI; ++i) {
+        ev_io_init(&listener_sockets[i].listener, (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[i].fd, EV_READ);
+        listener_sockets[i].listener.data = default_ctx;
+        ev_io_start(loop, &listener_sockets[i].listener);
+    }
 
     ev_loop(loop, 0);
     ERR("{core} Child %d exiting.\n", child_num);
@@ -1819,7 +1891,7 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-    listener_socket = create_main_socket();
+    create_main_sockets();
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHCUPD_PORT) {

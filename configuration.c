@@ -32,6 +32,7 @@
 #define CFG_PREFER_SERVER_CIPHERS "prefer-server-ciphers"
 #define CFG_BACKEND "backend"
 #define CFG_FRONTEND "frontend"
+#define CFG_MULTI "multi"
 #define CFG_WORKERS "workers"
 #define CFG_BACKLOG "backlog"
 #define CFG_KEEPALIVE "keepalive"
@@ -123,6 +124,7 @@ stud_config * config_new (void) {
   r->FRONT_PORT         = strdup("8443");
   r->BACK_IP            = strdup("127.0.0.1");
   r->BACK_PORT          = strdup("8000");
+  r->MULTI              = 1;
   r->NCORES             = 1;
   r->CERT_FILES         = NULL;
   r->CIPHER_SUITE       = NULL;
@@ -561,6 +563,10 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
   }
   else if (strcmp(k, CFG_BACKEND) == 0) {
     r = config_param_host_port(v, &cfg->BACK_IP, &cfg->BACK_PORT);
+  }
+  else if (strcmp(k, CFG_MULTI) == 0) {
+    r = config_param_val_int(v, &cfg->MULTI);
+    if (r && cfg->MULTI < 1) cfg->MULTI = 1;
   }
   else if (strcmp(k, CFG_WORKERS) == 0) {
     r = config_param_val_intl_pos(v, &cfg->NCORES);
@@ -1145,6 +1151,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     { CFG_PREFER_SERVER_CIPHERS, 0, NULL, 'O' },
     { CFG_BACKEND, 1, NULL, 'b' },
     { CFG_FRONTEND, 1, NULL, 'f' },
+    { CFG_MULTI, 1, NULL, 'm' },
     { CFG_WORKERS, 1, NULL, 'n' },
     { CFG_BACKLOG, 1, NULL, 'B' },
 #ifdef USE_SHARED_CACHE
@@ -1175,7 +1182,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     int option_index = 0;
     c = getopt_long(
       argc, argv,
-      "c:e:Ob:f:n:B:C:U:P:M:k:r:u:g:qstVh",
+      "c:e:Ob:f:m:n:B:C:U:P:M:k:r:u:g:qstVh",
       long_options, &option_index
     );
 
@@ -1212,6 +1219,9 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
       case 'f':
         config_param_validate(CFG_FRONTEND, optarg, cfg, NULL, 0);
+        break;
+      case 'm':
+        config_param_validate(CFG_MULTI, optarg, cfg, NULL, 0);
         break;
       case 'n':
         config_param_validate(CFG_WORKERS, optarg, cfg, NULL, 0);
