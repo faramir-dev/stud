@@ -96,7 +96,7 @@
 static struct ev_loop *loop;
 static struct addrinfo *backaddr;
 static pid_t master_pid;
-//FIXME: Does not matter that there is only one default context?
+//FIXME: Does it matter that there is only one default context?
 //FIXME: Added X-Forwarded-For ?
 #define LISTENER_SOCKET_CHECK 0x1F2E3D4C
 typedef struct listener_socket_desc {
@@ -283,7 +283,7 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
     switch (src->sa_family) {
     case AF_INET: {
         if (sizeof(struct sockaddr_in) > *p_dst_size)
-            die("Socket addr mischmasch");
+            die("Socket addr mishmash");
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -292,7 +292,7 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
         break;
     case AF_INET6: {
         if (sizeof(struct sockaddr_in6) > *p_dst_size)
-            die("Socket addr mischmasch");
+            die("Socket addr mishmash");
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in6);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -816,14 +816,14 @@ void init_openssl() {
 static char *prepare_proxy_line(struct sockaddr* ai_addr) {
     char tcp6_address_string[INET6_ADDRSTRLEN];
     char *fmt = NULL;
-    ssize_t res_snprintf;
+    ssize_t fmt_len;
     char buf[TCP_PROXY_LINE_MAX_SIZE] = "";
 
     if (!CONFIG->WRITE_PROXY_LINE)
         return NULL;
     else if (ai_addr->sa_family == AF_INET) {
         struct sockaddr_in* addr = (struct sockaddr_in*)ai_addr;
-        res_snprintf = snprintf(buf, sizeof(buf),
+        fmt_len = snprintf(buf, sizeof(buf),
                 "PROXY %%s %%s %s %%hu %hu\r\n",
                 inet_ntoa(addr->sin_addr),
                 ntohs(addr->sin_port));
@@ -831,7 +831,7 @@ static char *prepare_proxy_line(struct sockaddr* ai_addr) {
     else if (ai_addr->sa_family == AF_INET6 ) {
         struct sockaddr_in6* addr = (struct sockaddr_in6*)ai_addr;
         inet_ntop(AF_INET6,&(addr->sin6_addr),tcp6_address_string,INET6_ADDRSTRLEN);
-        res_snprintf = snprintf(buf, sizeof(buf),
+        fmt_len = snprintf(buf, sizeof(buf),
                  "PROXY %%s %%s %s %%hu %hu\r\n",
                  tcp6_address_string,
                  ntohs(addr->sin6_port));
@@ -841,12 +841,12 @@ static char *prepare_proxy_line(struct sockaddr* ai_addr) {
         exit(1);
     }
 
-    if(res_snprintf < 0 || (size_t)res_snprintf >= sizeof(buf))
+    if(fmt_len < 0 || (size_t)fmt_len >= sizeof(buf))
         die("Cannot create proxy line : %m");
-    fmt = malloc(res_snprintf + 1);
+    fmt = malloc(fmt_len + 1);
     if (!fmt)
         die("Cannot allocate memory for proxy line : %m");
-    memcpy(fmt, buf, res_snprintf + 1);
+    memcpy(fmt, buf, fmt_len + 1);
     return fmt;
 }
 
@@ -1397,7 +1397,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     listener_socket_desc *listener_socket = (void*)w;
     if (listener_socket->check != LISTENER_SOCKET_CHECK) {
-        die("Socket descriptor mischmasch");
+        die("Socket descriptor mishmash");
     }
     int index = listener_socket - listener_sockets;
 
