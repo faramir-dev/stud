@@ -852,6 +852,7 @@ static char *prepare_proxy_line(struct sockaddr* ai_addr) {
 
 /* Create the bound socket in the parent process */
 static void create_main_sockets() {
+    assert(!listener_sockets);
     listener_sockets = malloc(CONFIG->MULTI*sizeof(*listener_sockets));
     bzero(listener_sockets, CONFIG->MULTI*sizeof(*listener_sockets));
 
@@ -894,6 +895,7 @@ static void create_main_sockets() {
 #endif /* TCP_DEFER_ACCEPT */
 #endif
 
+        assert(!listener_sockets[i].tcp_proxy_line_fmt);
         listener_sockets[i].tcp_proxy_line_fmt = prepare_proxy_line((struct sockaddr*)&addr);
 
         listen(s, CONFIG->BACKLOG);
@@ -1483,6 +1485,7 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
 }
 
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
+    die("Not tested");
     (void) revents;
     (void) loop;
     struct sockaddr_storage addr;
