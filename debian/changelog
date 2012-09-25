@@ -1,3 +1,8 @@
+stud (0.3.1~0.20120925) unstable; urgency=low
+
+  * Added support for opening and listening to multiple ports.
+
+ -- Daniel Fiala <danfiala@ucw.cz>  Tue, 25 Sep 2012 15:00:00 +0200
 stud (0.3~0.20111212) unstable; urgency=low
 
   * Initial release.
