@@ -1,0 +1,17 @@
+#!/bin/sh
+
+set -e
+
+if ! ([ "$1" = "configure" ] || [ "$1" = "reconfigure" ]); then
+  exit 0
+fi
+
+USER=_stud
+
+adduser --system --disabled-password --disabled-login \
+    --home /var/run/stud --quiet --force-badname \
+    --no-create-home --group "$USER"
+
+#DEBHELPER#
+
+exit 0

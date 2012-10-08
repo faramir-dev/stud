@@ -1,0 +1,10 @@
+# Stud defaults
+
+# Location of configuration files for stud
+# FILES="/etc/stud/*.conf"
+
+# $CHROOT and $USER are defined in /etc/init.d/stud but you can
+# override them if needed.
+
+# Options common for all stud instances
+COMMON_OPTIONS="-r $CHROOT -u $USER"

@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -e
+
+#DEBHELPER#
+
+USER=_stud
+
+case "$1" in
+    purge)
+        deluser --system _stud || true
+        delgroup --system _stud || true
+
+        rm -rf /var/run/stud
+    ;;
+esac
+
+exit 0
