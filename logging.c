@@ -67,7 +67,7 @@ void msg(const int level, const char *fmt, ...) {
     const intmax_t pid = (intmax_t) getpid();
     const size_t pid_part_size = snprintf(NULL, 0, "[%jd]", pid);
 
-    char buf[1 + 1 + time_part_size + 1 + pid_part_size + 1 + isize];
+    char buf[1 + 1 + time_part_size + 1 + pid_part_size + 1 + isize + 1];
 
     size_t sz = 0;
     buf[0] = level;
