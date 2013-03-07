@@ -65,6 +65,7 @@
 #include "ringbuffer.h"
 #include "shctx.h"
 #include "configuration.h"
+#include "logging.h"
 
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0
@@ -186,21 +187,22 @@ typedef struct proxystate {
     struct sockaddr_storage remote_ip;  /* Remote ip returned from `accept` */
 } proxystate;
 
-#define LOG(...)                                            \
-    do {                                                    \
-      if (!CONFIG->QUIET) fprintf(stdout, __VA_ARGS__);     \
-      if (CONFIG->SYSLOG) syslog(LOG_INFO, __VA_ARGS__);    \
+#define MSG(LEVEL, ...)                                                          \
+    do {                                                                         \
+      if (!CONFIG->QUIET) msg((LEVEL), __VA_ARGS__);                             \
+      if (CONFIG->SYSLOG) syslog(msg_to_syslog_level((LEVEL)), __VA_ARGS__);     \
     } while(0)
 
-#define ERR(...)                                            \
-    do {                                                    \
-      fprintf(stderr, __VA_ARGS__);                         \
-      if (CONFIG->SYSLOG) syslog(LOG_ERR, __VA_ARGS__);     \
+#define DIE(...)                     \
+    do {                             \
+        MSG('C', __VA_ARGS__);       \
+        exit(1);                     \
     } while(0)
 
 #define NULL_DEV "/dev/null"
 
-static void fail(const char* s) {
+#if 0
+static void fail(const char *s) {
     perror(s);
     exit(1);
 }
@@ -213,13 +215,14 @@ void die (char *fmt, ...) {
 
     exit(1);
 }
+#endif
 
 /* Set a file descriptor (socket) to non-blocking mode */
 static void setnonblocking(int fd) {
     int flag = 1;
 
     if (ioctl(fd, FIONBIO, &flag) == -1)
-        die("Cannot switch fd %d to non-blocking mode : %m", fd);
+        DIE("Cannot switch fd %d to non-blocking mode : %m", fd);
 }
 
 /* set a tcp socket to use TCP Keepalive */
@@ -228,14 +231,14 @@ static void settcpkeepalive(int fd) {
     socklen_t optlen = sizeof(optval);
 
     if(setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &optval, optlen) < 0) {
-        ERR("Error activating SO_KEEPALIVE on client socket: %s", strerror(errno));
+        MSG('E', "Error activating SO_KEEPALIVE on client socket: %m");
     }
 
     optval = CONFIG->TCP_KEEPALIVE_TIME;
     optlen = sizeof(optval);
 #ifdef TCP_KEEPIDLE
     if(setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, &optval, optlen) < 0) {
-        ERR("Error setting TCP_KEEPIDLE on client socket: %s", strerror(errno));
+        MSG('E', "Error setting TCP_KEEPIDLE on client socket: %m");
     }
 #endif
 }
@@ -249,6 +252,7 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
 
     bio = BIO_new_file(cert, "r");
     if (!bio) {
+        // FIXME: Log the errors in normal way...
         ERR_print_errors_fp(stderr);
         return -1;
     }
@@ -256,13 +260,13 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
     dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
     BIO_free(bio);
     if (!dh) {
-        ERR("{core} Note: no DH parameters found in %s\n", cert);
+        MSG('E', "{core} Note: no DH parameters found in %s", cert);
         return -1;
     }
 
-    LOG("{core} Using DH parameters from %s\n", cert);
+    MSG('I', "{core} Using DH parameters from %s", cert);
     SSL_CTX_set_tmp_dh(ctx, dh);
-    LOG("{core} DH initialized with %d bit key\n", 8*DH_size(dh));
+    MSG('I', "{core} DH initialized with %d bit key", 8*DH_size(dh));
     DH_free(dh);
 
 #ifndef OPENSSL_NO_EC
@@ -271,7 +275,7 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
     ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
     SSL_CTX_set_tmp_ecdh(ctx, ecdh);
     EC_KEY_free(ecdh);
-    LOG("{core} ECDH Initialized with NIST P-256\n");
+    MSG('I', "{core} ECDH Initialized with NIST P-256");
 #endif /* NID_X9_62_prime256v1 */
 #endif /* OPENSSL_NO_EC */
 
@@ -283,7 +287,7 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
     switch (src->sa_family) {
     case AF_INET: {
         if (sizeof(struct sockaddr_in) > *p_dst_size)
-            die("Socket addr mishmash");
+            DIE("Socket addr mishmash");
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -292,7 +296,7 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
         break;
     case AF_INET6: {
         if (sizeof(struct sockaddr_in6) > *p_dst_size)
-            die("Socket addr mishmash");
+            DIE("Socket addr mishmash");
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in6);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -300,7 +304,7 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
         }
         break;
     default:
-        die("Unknown address family");
+        DIE("Unknown address family");
     }
 }
 
@@ -314,7 +318,7 @@ static void info_callback(const SSL *ssl, int where, int ret) {
         proxystate *ps = (proxystate *)SSL_get_app_data(ssl);
         if (ps->handshaked) {
             ps->renegotiation = 1;
-            LOG("{core} SSL renegotiation asked by client\n");
+            MSG('I', "{core} SSL renegotiation asked by client");
         }
     }
 }
@@ -417,23 +421,22 @@ static int create_shcupd_socket() {
     const int gai_err = getaddrinfo(CONFIG->SHCUPD_IP, CONFIG->SHCUPD_PORT,
                                     &hints, &ai);
     if (gai_err != 0) {
-        ERR("{getaddrinfo}: [%s]\n", gai_strerror(gai_err));
+        MSG('E', "{getaddrinfo}: [%s]", gai_strerror(gai_err));
         exit(1);
     }
 
     /* check if peers inet family addresses match */
     while (*pai) {
         if ((*pai)->ai_family != ai->ai_family) {
-            ERR("Share host and peers inet family differs\n");
-            exit(1);
+            DIE("Share host and peers inet family differs");
         }
         pai++;
     }
 
     int s = socket(ai->ai_family, SOCK_DGRAM, IPPROTO_UDP);
-
-    if (s == -1)
-      fail("{socket: shared cache updates}");
+    if (s == -1) {
+      DIE("{socket: shared cache updates} : %m");
+    }
 
     int t = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &t, sizeof(int));
@@ -455,13 +458,13 @@ static int create_shcupd_socket() {
 
                 memset(&ifr, 0, sizeof(ifr));
                 if (strlen(CONFIG->SHCUPD_MCASTIF) > IFNAMSIZ) {
-                    ERR("Error iface name is too long [%s]\n",CONFIG->SHCUPD_MCASTIF);
+                    MSG('E', "Error iface name is too long [%s]",CONFIG->SHCUPD_MCASTIF);
                     exit(1);
                 }
 
                 memcpy(ifr.ifr_name, CONFIG->SHCUPD_MCASTIF, strlen(CONFIG->SHCUPD_MCASTIF));
                 if (ioctl(s, SIOCGIFINDEX, &ifr)) {
-                    fail("{ioctl: SIOCGIFINDEX}");
+                    DIE("{ioctl: SIOCGIFINDEX} : %m");
                 }
 
                 mreqn.imr_ifindex = ifr.ifr_ifindex;
@@ -477,21 +480,21 @@ static int create_shcupd_socket() {
         if (setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreqn, sizeof(mreqn)) < 0) {
             if (errno != EINVAL) { /* EINVAL if it is not a multicast address,
                                                 not an error we consider unicast */
-                fail("{setsockopt: IP_ADD_MEMBERSIP}");
+                DIE("{setsockopt: IP_ADD_MEMBERSIP} : %m");
             }
         }
         else { /* this is a multicast address */
             unsigned char loop = 0;
 
             if(setsockopt(s, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
-               fail("{setsockopt: IP_MULTICAST_LOOP}");
+               DIE("{setsockopt: IP_MULTICAST_LOOP} : %m");
             }
         }
 
         /* optional set sockopts for sending to multicast msg */
         if (CONFIG->SHCUPD_MCASTIF &&
             setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, &mreqn, sizeof(mreqn)) < 0) {
-            fail("{setsockopt: IP_MULTICAST_IF}");
+            DIE("{setsockopt: IP_MULTICAST_IF} : %m");
         }
 
         if (CONFIG->SHCUPD_MCASTTTL) {
@@ -499,7 +502,7 @@ static int create_shcupd_socket() {
 
              ttl = (unsigned char)atoi(CONFIG->SHCUPD_MCASTTTL);
              if (setsockopt(s, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
-                 fail("{setsockopt: IP_MULTICAST_TTL}");
+                 DIE("{setsockopt: IP_MULTICAST_TTL} : %m");
              }
         }
 
@@ -518,13 +521,13 @@ static int create_shcupd_socket() {
 
                 memset(&ifr, 0, sizeof(ifr));
                 if (strlen(CONFIG->SHCUPD_MCASTIF) > IFNAMSIZ) {
-                    ERR("Error iface name is too long [%s]\n",CONFIG->SHCUPD_MCASTIF);
+                    MSG('E', "Error iface name is too long [%s]",CONFIG->SHCUPD_MCASTIF);
                     exit(1);
                 }
 
                 memcpy(ifr.ifr_name, CONFIG->SHCUPD_MCASTIF, strlen(CONFIG->SHCUPD_MCASTIF));
                 if (ioctl(s, SIOCGIFINDEX, &ifr)) {
-                    fail("{ioctl: SIOCGIFINDEX}");
+                    DIE("{ioctl: SIOCGIFINDEX} : %m");
                 }
 
                 mreq.ipv6mr_interface = ifr.ifr_ifindex;
@@ -537,21 +540,21 @@ static int create_shcupd_socket() {
         if (setsockopt(s, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
             if (errno != EINVAL) { /* EINVAL if it is not a multicast address,
                                                 not an error we consider unicast */
-                fail("{setsockopt: IPV6_ADD_MEMBERSIP}");
+                DIE("{setsockopt: IPV6_ADD_MEMBERSIP} : %m");
             }
         }
         else { /* this is a multicast address */
             unsigned int loop = 0;
 
             if(setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
-               fail("{setsockopt: IPV6_MULTICAST_LOOP}");
+               DIE("{setsockopt: IPV6_MULTICAST_LOOP} : %m");
             }
         }
 
         /* optional set sockopts for sending to multicast msg */
         if (setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_IF,
                                &mreq.ipv6mr_interface, sizeof(mreq.ipv6mr_interface)) < 0) {
-            fail("{setsockopt: IPV6_MULTICAST_IF}");
+            DIE("{setsockopt: IPV6_MULTICAST_IF} : %m");
         }
 
         if (CONFIG->SHCUPD_MCASTTTL) {
@@ -559,14 +562,14 @@ static int create_shcupd_socket() {
 
             hops = atoi(CONFIG->SHCUPD_MCASTTTL);
             if (setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops)) < 0) {
-                fail("{setsockopt: IPV6_MULTICAST_HOPS}");
+                DIE("{setsockopt: IPV6_MULTICAST_HOPS} : %m");
             }
         }
     }
 #endif /* IPV6_ADD_MEMBERSHIP */
 
     if (bind(s, ai->ai_addr, ai->ai_addrlen)) {
-        fail("{bind-socket}");
+        DIE("{bind-socket} : %m");
     }
 
     freeaddrinfo(ai);
@@ -672,8 +675,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
 
     rsa = load_rsa_privatekey(ctx, pemfile);
     if (!rsa) {
-       ERR("Error loading rsa private key\n");
-       exit(1);
+       DIE("Error loading rsa private key");
     }
 
     if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
@@ -687,20 +689,18 @@ SSL_CTX *make_ctx(const char *pemfile) {
 
 #ifndef OPENSSL_NO_TLSEXT
     if (!SSL_CTX_set_tlsext_servername_callback(ctx, sni_switch_ctx)) {
-        ERR("Error setting up SNI support\n");
+        DIE("Error setting up SNI support");
     }
 #endif /* OPENSSL_NO_TLSEXT */
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHARED_CACHE) {
         if (shared_context_init(ctx, CONFIG->SHARED_CACHE) < 0) {
-            ERR("Unable to alloc memory for shared cache.\n");
-            exit(1);
+            DIE("Unable to alloc memory for shared cache.");
         }
         if (CONFIG->SHCUPD_PORT) {
             if (compute_secret(rsa, shared_secret) < 0) {
-                ERR("Unable to compute shared secret.\n");
-                exit(1);
+                DIE("Unable to compute shared secret.");
             }
 
             /* Force tls tickets cause keys differs */
@@ -759,7 +759,7 @@ void init_openssl() {
         f = BIO_new(BIO_s_file());
         // TODO: error checking
         if (!BIO_read_filename(f, cf->CERT_FILE)) {
-            ERR("Could not read cert '%s'\n", cf->CERT_FILE);
+            DIE("Could not read cert '%s'", cf->CERT_FILE);
         }
         x509 = PEM_read_bio_X509_AUX(f, NULL, NULL, NULL);
         BIO_free(f);
@@ -784,8 +784,7 @@ void init_openssl() {
         X509_NAME *x509_name = X509_get_subject_name(x509);
         i = X509_NAME_get_index_by_NID(x509_name, NID_commonName, -1);
         if (i < 0) {
-            ERR("Could not find Subject Alternative Names or a CN on cert %s\n",
-                    cf->CERT_FILE);
+            DIE("Could not find Subject Alternative Names or a CN on cert %s", cf->CERT_FILE);
         }
         X509_NAME_ENTRY *x509_entry = X509_NAME_get_entry(x509_name, i);
         PUSH_CTX(x509_entry->value, ctx);
@@ -806,7 +805,7 @@ void init_openssl() {
                 ERR_print_errors_fp(stderr);
                 exit(1);
             }
-            LOG("{core} will use OpenSSL engine %s.\n", ENGINE_get_id(e));
+            MSG('I', "{core} will use OpenSSL engine %s.", ENGINE_get_id(e));
             ENGINE_finish(e);
             ENGINE_free(e);
         }
@@ -837,15 +836,16 @@ static char *prepare_proxy_line(struct sockaddr* ai_addr) {
                  ntohs(addr->sin6_port));
     }
     else {
-        ERR("The --write-proxy mode is not implemented for this address family.\n");
-        exit(1);
+        DIE("The --write-proxy mode is not implemented for this address family.");
     }
 
-    if(fmt_len < 0 || (size_t)fmt_len >= sizeof(buf))
-        die("Cannot create proxy line : %m");
+    if(fmt_len < 0 || (size_t)fmt_len >= sizeof(buf)) {
+        DIE("Cannot create proxy line : %m");
+    }
     fmt = malloc(fmt_len + 1);
-    if (!fmt)
-        die("Cannot allocate memory for proxy line : %m");
+    if (!fmt) {
+        DIE("Cannot allocate memory for proxy line : %m");
+    }
     memcpy(fmt, buf, fmt_len + 1);
     return fmt;
 }
@@ -854,6 +854,9 @@ static char *prepare_proxy_line(struct sockaddr* ai_addr) {
 static void create_main_sockets() {
     assert(!listener_sockets);
     listener_sockets = malloc(CONFIG->MULTI*sizeof(*listener_sockets));
+    if (!listener_sockets) {
+        DIE("Cannot allocate memory for listener sockets ;-(");
+    }
     bzero(listener_sockets, CONFIG->MULTI*sizeof(*listener_sockets));
 
     struct addrinfo *ai, hints;
@@ -864,7 +867,7 @@ static void create_main_sockets() {
     const int gai_err = getaddrinfo(CONFIG->FRONT_IP, CONFIG->FRONT_PORT,
                                     &hints, &ai);
     if (gai_err != 0) {
-        ERR("{getaddrinfo}: [%s]\n", gai_strerror(gai_err));
+        DIE("{getaddrinfo}: [%s]", gai_strerror(gai_err));
         exit(1);
     }
     for (int i = 0; i < CONFIG->MULTI; ++i) {
@@ -872,7 +875,7 @@ static void create_main_sockets() {
         int s = listener_sockets[i].fd = socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
 
         if (s == -1)
-          fail("{socket: main}");
+          DIE("{socket: main} : %m");
 
         int t = 1;
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &t, sizeof(int));
@@ -885,7 +888,7 @@ static void create_main_sockets() {
         size_t addr_size = sizeof(addr);
         addr_inc_port(ai->ai_addr, ai->ai_addrlen, (struct sockaddr*)&addr, &addr_size, i);
         if (bind(s, (struct sockaddr*)&addr, addr_size)) {
-            fail("{bind-socket}");
+            DIE("{bind-socket} : %m");
         }
 
 #ifndef NO_DEFER_ACCEPT
@@ -914,7 +917,7 @@ static int create_back_socket() {
     int flag = 1;
     int ret = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
     if (ret == -1) {
-      perror("Couldn't setsockopt to backend (TCP_NODELAY)\n");
+      MSG('E', "Couldn't setsockopt to backend (TCP_NODELAY) : %m");
     }
     setnonblocking(s);
 
@@ -964,13 +967,13 @@ static void handle_socket_errno(proxystate *ps, int backend) {
         return;
 
     if (errno == ECONNRESET)
-        ERR("{%s} Connection reset by peer\n", backend ? "backend" : "client");
+        DIE("{%s} Connection reset by peer", backend ? "backend" : "client");
     else if (errno == ETIMEDOUT)
-        ERR("{%s} Connection to backend timed out\n", backend ? "backend" : "client");
+        DIE("{%s} Connection to backend timed out", backend ? "backend" : "client");
     else if (errno == EPIPE)
-        ERR("{%s} Broken pipe to backend (EPIPE)\n", backend ? "backend" : "client");
+        DIE("{%s} Broken pipe to backend (EPIPE)", backend ? "backend" : "client");
     else
-        perror("{backend} [errno]");
+        MSG('E', "{backend} [errno] : %m");
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
 
@@ -985,7 +988,7 @@ static void start_connect(proxystate *ps) {
         ev_io_start(loop, &ps->ev_w_connect);
         return ;
     }
-    perror("{backend-connect}");
+    MSG('E', "{backend-connect} : %m");
     shutdown_proxy(ps, SHUTDOWN_HARD);
 }
 
@@ -1012,7 +1015,7 @@ static void clear_read(struct ev_loop *loop, ev_io *w, int revents) {
             safe_enable_io(ps, &ps->ev_w_ssl);
     }
     else if (t == 0) {
-        LOG("{%s} Connection closed\n", fd == ps->fd_down ? "backend" : "client");
+        MSG('I', "{%s} Connection closed\n", fd == ps->fd_down ? "backend" : "client");
         shutdown_proxy(ps, SHUTDOWN_CLEAR);
     }
     else {
@@ -1090,7 +1093,7 @@ static void handle_connect(struct ev_loop *loop, ev_io *w, int revents) {
         /* do nothing, we'll get phoned home again... */
     }
     else {
-        perror("{backend-connect}");
+        MSG('E', "{backend-connect} : %m");
         shutdown_proxy(ps, SHUTDOWN_HARD);
     }
 }
@@ -1205,12 +1208,12 @@ static void client_proxy_proxy(struct ev_loop *loop, ev_io *w, int revents) {
     }
 
     if (proxy == end) {
-        LOG("{client} Unexpectedly long PROXY line. Perhaps a malformed request?");
+        MSG('I', "{client} Unexpectedly long PROXY line. Perhaps a malformed request?");
         shutdown_proxy(ps, SHUTDOWN_SSL);
     }
     else if (t == 1) {
         if (ringbuffer_is_full(&ps->ring_ssl2clear)) {
-            LOG("{client} Error writing PROXY line");
+            MSG('I', "{client} Error writing PROXY line");
             shutdown_proxy(ps, SHUTDOWN_SSL);
             return;
         }
@@ -1228,7 +1231,7 @@ static void client_proxy_proxy(struct ev_loop *loop, ev_io *w, int revents) {
         }
     }
     else if (!BIO_should_retry(b)) {
-        LOG("{client} Unexpected error reading PROXY line");
+        MSG('I', "{client} Unexpected error reading PROXY line");
         shutdown_proxy(ps, SHUTDOWN_SSL);
     }
 }
@@ -1256,11 +1259,11 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
             ev_io_start(loop, &ps->ev_w_handshake);
         }
         else if (err == SSL_ERROR_ZERO_RETURN) {
-            LOG("{%s} Connection closed (in handshake)\n", w->fd == ps->fd_up ? "client" : "backend");
+            MSG('I', "{%s} Connection closed (in handshake)", w->fd == ps->fd_up ? "client" : "backend");
             shutdown_proxy(ps, SHUTDOWN_SSL);
         }
         else {
-            LOG("{%s} Unexpected SSL error (in handshake): %d\n", w->fd == ps->fd_up ? "client" : "backend", err);
+            MSG('I', "{%s} Unexpected SSL error (in handshake): %d", w->fd == ps->fd_up ? "client" : "backend", err);
             shutdown_proxy(ps, SHUTDOWN_SSL);
         }
     }
@@ -1268,15 +1271,19 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
 
 /* Handle a socket error condition passed to us from OpenSSL */
 static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
-    if (err == SSL_ERROR_ZERO_RETURN)
-        ERR("{%s} Connection closed (in data)\n", backend ? "backend" : "client");
-    else if (err == SSL_ERROR_SYSCALL)
-        if (errno == 0)
-            ERR("{%s} Connection closed (in data)\n", backend ? "backend" : "client");
-        else
-            perror(backend ? "{backend} [errno] " : "{client} [errno] ");
+    if (err == SSL_ERROR_ZERO_RETURN) {
+        DIE("{%s} Connection closed (in data)", backend ? "backend" : "client");
+    }
+    else if (err == SSL_ERROR_SYSCALL) {
+        if (errno == 0) {
+            DIE("{%s} Connection closed (in data)", backend ? "backend" : "client");
+        }
+        else {
+            MSG('E', "{%s} [errno] : %m", backend ? "backend" : "client");
+        }
+    }
     else
-        ERR("{%s} Unexpected SSL_read error: %d\n", backend ? "backend" : "client" , err);
+        DIE("{%s} Unexpected SSL_read error: %d", backend ? "backend" : "client" , err);
     shutdown_proxy(ps, SHUTDOWN_SSL);
 }
 
@@ -1367,11 +1374,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     if (client == -1) {
         switch (errno) {
         case EMFILE:
-            ERR("{client} accept() failed; too many open files for this process\n");
-            break;
-
-        case ENFILE:
-            ERR("{client} accept() failed; too many open files for this system\n");
+            MSG('E', "{client} accept() failed; too many open files for this process");
             break;
 
         default:
@@ -1384,13 +1387,13 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     int flag = 1;
     int ret = setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
     if (ret == -1) {
-      perror("Couldn't setsockopt on client (TCP_NODELAY)\n");
+      MSG('E', "Couldn't setsockopt on client (TCP_NODELAY) : %m");
     }
 #ifdef TCP_CWND
     int cwnd = 10;
     ret = setsockopt(client, IPPROTO_TCP, TCP_CWND, &cwnd, sizeof(cwnd));
     if (ret == -1) {
-      perror("Couldn't setsockopt on client (TCP_CWND)\n");
+      MSG('E', "Couldn't setsockopt on client (TCP_CWND) : %m");
     }
 #endif
 
@@ -1399,15 +1402,15 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     listener_socket_desc *listener_socket = (void*)w;
     if (listener_socket->check != LISTENER_SOCKET_CHECK) {
-        die("Socket descriptor mishmash");
+        DIE("Socket descriptor mishmash");
     }
-    int index = listener_socket - listener_sockets;
+    const int index = listener_socket - listener_sockets;
 
-    int back = create_back_socket();
+    const int back = create_back_socket();
 
     if (back == -1) {
         close(client);
-        perror("{backend-socket}");
+        MSG('E', "{backend-socket} : %m");
         return;
     }
 
@@ -1422,6 +1425,12 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     SSL_set_fd(ssl, client);
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
+    if (!ps) {
+        MSG('E', "{Cannot allocate memory for proxystate} : %m");
+        close(client);
+        close(back);
+        return;
+    }
 
     ps->index = index;
     ps->fd_up = client;
@@ -1474,7 +1483,7 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
     (void) revents;
     pid_t ppid = getppid();
     if (ppid != master_pid) {
-        ERR("{core} Process %d detected parent death, closing listener sockets.\n", child_num);
+        MSG('e', "{core} Process %d detected parent death, closing listener sockets.", child_num);
         ev_timer_stop(loop, w);
         for (int i = 0; i < CONFIG->MULTI; ++i) {
             ev_io_stop(loop, &listener_sockets[i].listener);
@@ -1485,7 +1494,7 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
 }
 
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
-    die("Not tested");
+    DIE("Not tested");
     (void) revents;
     (void) loop;
     struct sockaddr_storage addr;
@@ -1494,11 +1503,11 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     if (client == -1) {
         switch (errno) {
         case EMFILE:
-            ERR("{client} accept() failed; too many open files for this process\n");
+            DIE("{client} accept() failed; too many open files for this process");
             break;
 
         case ENFILE:
-            ERR("{client} accept() failed; too many open files for this system\n");
+            DIE("{client} accept() failed; too many open files for this system");
             break;
 
         default:
@@ -1511,13 +1520,13 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     int flag = 1;
     int ret = setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
     if (ret == -1) {
-      perror("Couldn't setsockopt on client (TCP_NODELAY)\n");
+      MSG('E', "Couldn't setsockopt on client (TCP_NODELAY) : %m");
     }
 #ifdef TCP_CWND
     int cwnd = 10;
     ret = setsockopt(client, IPPROTO_TCP, TCP_CWND, &cwnd, sizeof(cwnd));
     if (ret == -1) {
-      perror("Couldn't setsockopt on client (TCP_CWND)\n");
+      MSG('E', "Couldn't setsockopt on client (TCP_CWND) : %m");
     }
 #endif
 
@@ -1528,7 +1537,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     if (back == -1) {
         close(client);
-        perror("{backend-socket}");
+        MSG('E', "{backend-socket} : %m");
         return;
     }
 
@@ -1541,10 +1550,17 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     SSL_set_mode(ssl, mode);
     SSL_set_connect_state(ssl);
     SSL_set_fd(ssl, back);
-    if (client_session)
+    if (client_session) {
         SSL_set_session(ssl, client_session);
+    }
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
+    if (!ps) {
+        MSG('E', "{Cannot allocate memory for proxystate} : %m");
+        close(client);
+        close(back);
+        return;
+    }
 
     ps->fd_up = client;
     ps->fd_down = back;
@@ -1588,7 +1604,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
 /* Set up the child (worker) process including libev event loop, read event
  * on the bound socket, etc */
 static void handle_connections() {
-    LOG("{core} Process %d online\n", child_num);
+    MSG('I', "{core} Process %d online", child_num);
 
     /* child cannot create new children... */
     create_workers = 0;
@@ -1601,9 +1617,9 @@ static void handle_connections() {
 
     int res = sched_setaffinity(0, sizeof(cpus), &cpus);
     if (!res)
-        LOG("{core} Successfully attached to CPU #%d\n", child_num);
+        MSG('I', "{core} Successfully attached to CPU #%d\n", child_num);
     else
-        ERR("{core-warning} Unable to attach to CPU #%d; do you have that many cores?\n", child_num);
+        MSG('W', "{core-warning} Unable to attach to CPU #%d; do you have that many cores?", child_num);
 #endif
 
     loop = ev_default_loop(EVFLAG_AUTO);
@@ -1619,22 +1635,22 @@ static void handle_connections() {
     }
 
     ev_loop(loop, 0);
-    ERR("{core} Child %d exiting.\n", child_num);
+    DIE("{core} Child %d exiting.", child_num);
     exit(1);
 }
 
 void change_root() {
     if (chroot(CONFIG->CHROOT) == -1)
-        fail("chroot");
+        DIE("chroot : %m");
     if (chdir("/"))
-        fail("chdir");
+        DIE("chdir : %m");
 }
 
 void drop_privileges() {
     if (setgid(CONFIG->GID))
-        fail("setgid failed");
+        DIE("setgid failed : %m");
     if (setuid(CONFIG->UID))
-        fail("setuid failed");
+        DIE("setuid failed : %m");
 }
 
 
@@ -1648,8 +1664,7 @@ void init_globals() {
     const int gai_err = getaddrinfo(CONFIG->BACK_IP, CONFIG->BACK_PORT,
                                     &hints, &backaddr);
     if (gai_err != 0) {
-        ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
-        exit(1);
+        DIE("{getaddrinfo}: [%s]", gai_strerror(gai_err));
     }
 
 #ifdef USE_SHARED_CACHE
@@ -1666,8 +1681,7 @@ void init_globals() {
             const int gai_err = getaddrinfo(spo->ip,
                                 spo->port ? spo->port : CONFIG->SHCUPD_PORT, &hints, pai);
             if (gai_err != 0) {
-                ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
-                exit(1);
+                DIE("{getaddrinfo}: [%s]", gai_strerror(gai_err));
             }
             spo++;
             pai++;
@@ -1676,7 +1690,7 @@ void init_globals() {
 #endif
     /* child_pids */
     if ((child_pids = calloc(CONFIG->NCORES, sizeof(pid_t))) == NULL)
-        fail("calloc");
+        DIE("calloc : %m");
 
     if (CONFIG->SYSLOG)
         openlog("stud", LOG_CONS | LOG_PID | LOG_NDELAY, CONFIG->SYSLOG_FACILITY);
@@ -1692,7 +1706,7 @@ void start_children(int start_index, int count) {
     for (child_num = start_index; child_num < start_index + count; child_num++) {
         int pid = fork();
         if (pid == -1) {
-            ERR("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
+            DIE("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
             exit(1);
         }
         else if (pid == 0) { /* child */
@@ -1717,7 +1731,7 @@ void replace_child_with_pid(pid_t pid) {
         }
     }
 
-    ERR("Cannot find index for child pid %d", pid);
+    DIE("Cannot find index for child pid %d", pid);
 }
 
 /* Manage status changes in child processes */
@@ -1728,23 +1742,23 @@ static void do_wait(int __attribute__ ((unused)) signo) {
 
     if (pid == -1) {
         if (errno == ECHILD) {
-            ERR("{core} All children have exited! Restarting...\n");
+            MSG('e', "{core} All children have exited! Restarting...\n");
             start_children(0, CONFIG->NCORES);
         }
         else if (errno == EINTR) {
-            ERR("{core} Interrupted wait\n");
+            MSG('W', "{core} Interrupted wait");
         }
         else {
-            fail("wait");
+            MSG('E', "wait : %m");
         }
     }
     else {
         if (WIFEXITED(status)) {
-            ERR("{core} Child %d exited with status %d. Replacing...\n", pid, WEXITSTATUS(status));
+            MSG('e', "{core} Child %d exited with status %d. Replacing...\n", pid, WEXITSTATUS(status));
             replace_child_with_pid(pid);
         }
         else if (WIFSIGNALED(status)) {
-            ERR("{core} Child %d was terminated by signal %d. Replacing...\n", pid, WTERMSIG(status));
+            MSG('e', "{core} Child %d was terminated by signal %d. Replacing...\n", pid, WTERMSIG(status));
             replace_child_with_pid(pid);
         }
     }
@@ -1756,17 +1770,17 @@ static void sigh_terminate (int __attribute__ ((unused)) signo) {
 
     /* are we the master? */
     if (getpid() == master_pid) {
-        LOG("{core} Received signal %d, shutting down.\n", signo);
+        MSG('I', "{core} Received signal %d, shutting down.", signo);
 
         /* kill all children */
         int i;
         for (i = 0; i < CONFIG->NCORES; i++) {
-            /* LOG("Stopping worker pid %d.\n", child_pids[i]); */
+            /* MSG('I', "Stopping worker pid %d.\n", child_pids[i]); */
             if (child_pids[i] > 1 && kill(child_pids[i], SIGTERM) != 0) {
-                ERR("{core} Unable to send SIGTERM to worker pid %d: %s\n", child_pids[i], strerror(errno));
+                DIE("{core} Unable to send SIGTERM to worker pid %d: %s\n", child_pids[i], strerror(errno));
             }
         }
-        /* LOG("Shutdown complete.\n"); */
+        /* MSG('I', "Shutdown complete."); */
     }
 
     /* this is it, we're done... */
@@ -1782,7 +1796,7 @@ void init_signals() {
 
     /* Avoid getting PIPE signal when writing to a closed file descriptor */
     if (sigaction(SIGPIPE, &act, NULL) < 0)
-        fail("sigaction - sigpipe");
+        DIE("sigaction - sigpipe : %m");
 
     /* We don't care if someone stops and starts a child process with kill (1) */
     act.sa_flags = SA_NOCLDSTOP;
@@ -1791,17 +1805,17 @@ void init_signals() {
 
     /* We do care when child processes change status */
     if (sigaction(SIGCHLD, &act, NULL) < 0)
-        fail("sigaction - sigchld");
+        DIE("sigaction - sigchld : %m");
 
     /* catch INT and TERM signals */
     act.sa_flags = 0;
     act.sa_handler = sigh_terminate;
     if (sigaction(SIGINT, &act, NULL) < 0) {
-        ERR("Unable to register SIGINT signal handler: %s\n", strerror(errno));
+        DIE("Unable to register SIGINT signal handler: %m");
         exit(1);
     }
     if (sigaction(SIGTERM, &act, NULL) < 0) {
-        ERR("Unable to register SIGTERM signal handler: %s\n", strerror(errno));
+        DIE("Unable to register SIGTERM signal handler: %m");
         exit(1);
     }
 }
@@ -1809,23 +1823,24 @@ void init_signals() {
 void daemonize () {
     /* go to root directory */
     if (chdir("/") != 0) {
-        ERR("Unable change directory to /: %s\n", strerror(errno));
+        DIE("Unable change directory to /: %m");
         exit(1);
     }
 
     /* let's make some children, baby :) */
     pid_t pid = fork();
     if (pid < 0) {
-        ERR("Unable to daemonize: fork failed: %s\n", strerror(errno));
+        DIE("Unable to daemonize: fork failed: %m");
         exit(1);
     }
 
     /* am i the parent? */
     if (pid != 0) {
-        printf("{core} Daemonized as pid %d.\n", pid);
+        MSG('I', "{core} Daemonized as pid %d.", pid);
         exit(0);
     }
 
+    // FIXME: Reopen 0, 1 and 2 , not stdin, stdout, stderr !
     /* close standard streams */
     fclose(stdin);
     fclose(stdout);
@@ -1834,28 +1849,24 @@ void daemonize () {
     /* reopen standard streams to null device */
     stdin = fopen(NULL_DEV, "r");
     if (stdin == NULL) {
-        ERR("Unable to reopen stdin to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
+        DIE("Unable to reopen stdin to %s: %m", NULL_DEV);
     }
     stdout = fopen(NULL_DEV, "w");
     if (stdout == NULL) {
-        ERR("Unable to reopen stdout to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
+        DIE("Unable to reopen stdout to %s: %m", NULL_DEV);
     }
     stderr = fopen(NULL_DEV, "w");
     if (stderr == NULL) {
-        ERR("Unable to reopen stderr to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
+        DIE("Unable to reopen stderr to %s: %m", NULL_DEV);
     }
 
     /* this is child, the new master */
     pid_t s = setsid();
     if (s < 0) {
-        ERR("Unable to create new session, setsid(2) failed: %s :: %d\n", strerror(errno), s);
-        exit(1);
+        DIE("Unable to create new session, setsid(2) failed: %m :: %d", s);
     }
 
-    LOG("Successfully daemonized as pid %d.\n", getpid());
+    MSG('I', "Successfully daemonized as pid %d.", getpid());
 }
 
 void openssl_check_version() {
@@ -1865,8 +1876,8 @@ void openssl_check_version() {
     /* check if we're running the same openssl that we were */
     /* compiled with */
     if ((openssl_version ^ OPENSSL_VERSION_NUMBER) & ~0xff0L) {
-        ERR(
-            "WARNING: {core} OpenSSL version mismatch; stud was compiled with %lx, now using %lx.\n",
+        DIE(
+            "WARNING: {core} OpenSSL version mismatch; stud was compiled with %lx, now using %lx.",
             (unsigned long int) OPENSSL_VERSION_NUMBER,
             (unsigned long int) openssl_version
         );
@@ -1874,7 +1885,7 @@ void openssl_check_version() {
         /* exit(1); */
     }
 
-    LOG("{core} Using OpenSSL version %lx.\n", (unsigned long int) openssl_version);
+    MSG('I', "{core} Using OpenSSL version %lx.", (unsigned long int) openssl_version);
 }
 
 /* Process command line args, create the bound socket,
