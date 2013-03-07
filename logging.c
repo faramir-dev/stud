@@ -54,7 +54,7 @@ int msg_to_syslog_level(const int c) {
 }
 
 void msg(const int level, const char *fmt, ...) {
-    static const size_t time_part_size = (4 + 2 + 2) + 1 + (2 + 1 + 2 + 1 + 2); // YYYYMMDD HH:MM:SS
+    static const size_t time_part_size = (4 + 1 + 2 + 1 + 2) + 1 + (2 + 1 + 2 + 1 + 2); // YYYY.MM.DD HH:MM:SS
 
     const int file_fd = open_log_file();
     const int fd = file_fd >= 0 ? file_fd : 2;
@@ -76,7 +76,7 @@ void msg(const int level, const char *fmt, ...) {
 
     time_t timer;
     struct tm tm_info;
-    strftime(&buf[sz], time_part_size + 1, "%Y%m%d %H:%M:%S", localtime_r((time(&timer), &timer), &tm_info) );
+    strftime(&buf[sz], time_part_size + 1, "%Y.%m.%d %H:%M:%S", localtime_r((time(&timer), &timer), &tm_info) );
     sz += time_part_size;
 
     buf[sz] = ' ';

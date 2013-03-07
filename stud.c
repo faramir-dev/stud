@@ -27,6 +27,7 @@
   *
   **/
 
+#include <assert.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -199,6 +200,16 @@ typedef struct proxystate {
         exit(1);                     \
     } while(0)
 
+static inline void msg_ssl(void) {
+    BIO *bio = BIO_new(BIO_s_mem ());
+    ERR_print_errors(bio);
+    char *buf = NULL;
+    size_t len = BIO_get_mem_data(bio, &buf);
+    assert((ssize_t)len >= 0 && (int)len == (ssize_t)len);
+    MSG('E', "OpenSSL: %.*s", (int)len, buf);
+    BIO_free(bio);
+}
+
 #define NULL_DEV "/dev/null"
 
 #if 0
@@ -253,14 +264,14 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
     bio = BIO_new_file(cert, "r");
     if (!bio) {
         // FIXME: Log the errors in normal way...
-        ERR_print_errors_fp(stderr);
+        msg_ssl();
         return -1;
     }
 
     dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
     BIO_free(bio);
     if (!dh) {
-        MSG('E', "{core} Note: no DH parameters found in %s", cert);
+        MSG('W', "{core} Note: no DH parameters found in %s", cert);
         return -1;
     }
 
@@ -585,7 +596,7 @@ RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
 
     bio = BIO_new_file(file, "r");
     if (!bio) {
-        ERR_print_errors_fp(stderr);
+        msg_ssl();
         return NULL;
     }
 
@@ -655,7 +666,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
 
     if (CONFIG->CIPHER_SUITE) {
         if (SSL_CTX_set_cipher_list(ctx, CONFIG->CIPHER_SUITE) != 1) {
-            ERR_print_errors_fp(stderr);
+            msg_ssl();
         }
     }
 
@@ -669,7 +680,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
 
     /* SSL_SERVER Mode stuff */
     if (SSL_CTX_use_certificate_chain_file(ctx, pemfile) <= 0) {
-        ERR_print_errors_fp(stderr);
+        msg_ssl();
         exit(1);
     }
 
@@ -679,7 +690,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
     }
 
     if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
-        ERR_print_errors_fp(stderr);
+        msg_ssl();
         exit(1);
     }
 
@@ -802,7 +813,7 @@ void init_openssl() {
             if ((e = ENGINE_by_id(CONFIG->ENGINE)) == NULL ||
                 !ENGINE_init(e) ||
                 !ENGINE_set_default(e, ENGINE_METHOD_ALL)) {
-                ERR_print_errors_fp(stderr);
+                msg_ssl();
                 exit(1);
             }
             MSG('I', "{core} will use OpenSSL engine %s.", ENGINE_get_id(e));
@@ -1900,6 +1911,8 @@ int main(int argc, char **argv) {
     create_workers = 1;
 
     openssl_check_version();
+
+    SSL_load_error_strings();
 
     init_signals();
 
