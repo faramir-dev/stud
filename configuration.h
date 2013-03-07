@@ -50,6 +50,7 @@ struct __stud_config {
     char *FRONT_PORT;
     char *BACK_IP;
     char *BACK_PORT;
+    char *LOG_FILE;
     int MULTI;
     long NCORES;
     struct cert_files *CERT_FILES;

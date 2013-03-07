@@ -25,7 +25,7 @@ static int open_log_file() {
     if (NULL == log_path) {
         return -1;
     }
-    const int fd = open(log_path, O_CREAT | O_APPEND | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    const int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (-1 == fd) {  // This is not necessary, but I find code more readable
         return -1;
     }

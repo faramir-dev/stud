@@ -20,6 +20,7 @@
 #include <syslog.h>
 
 #include "configuration.h"
+#include "logging.h"
 #include "version.h"
 
 #define ADDR_LEN 150
@@ -48,6 +49,7 @@
 #define CFG_WRITE_PROXY "write-proxy"
 #define CFG_PEM_FILE "pem-file"
 #define CFG_PROXY_PROXY "proxy-proxy"
+#define CFG_LOG_FILE "log-file"
 
 #ifdef USE_SHARED_CACHE
   #define CFG_SHARED_CACHE "shared-cache"
@@ -124,6 +126,7 @@ stud_config * config_new (void) {
   r->FRONT_PORT         = strdup("8443");
   r->BACK_IP            = strdup("127.0.0.1");
   r->BACK_PORT          = strdup("8000");
+  r->LOG_FILE           = NULL;
   r->MULTI              = 1;
   r->NCORES             = 1;
   r->CERT_FILES         = NULL;
@@ -163,6 +166,10 @@ void config_destroy (stud_config *cfg) {
   if (cfg->FRONT_PORT != NULL) free(cfg->FRONT_PORT);
   if (cfg->BACK_IP != NULL) free(cfg->BACK_IP);
   if (cfg->BACK_PORT != NULL) free(cfg->BACK_PORT);
+  if (cfg->LOG_FILE != NULL) {
+      set_msg_log_path(NULL);
+      free(cfg->LOG_FILE);
+  }
   if (cfg->CERT_FILES != NULL) {
     struct cert_files *curr = cfg->CERT_FILES, *next;
     while (cfg->CERT_FILES != NULL) {
@@ -294,8 +301,10 @@ char * config_assign_str (char **dst, char *v) {
       memset(*dst, '\0', strlen(v) + 1);
       memcpy(*dst, v, strlen(v));
     }
-    else
+    else {
       free(*dst);
+      *dst = NULL;
+    }
   }
   return *dst;
 }
@@ -574,6 +583,10 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
   else if (strcmp(k, CFG_BACKLOG) == 0) {
     r = config_param_val_int(v, &cfg->BACKLOG);
     if (r && cfg->BACKLOG < -1) cfg->BACKLOG = -1;
+  }
+  else if (strcmp(k, CFG_LOG_FILE) == 0) {
+      config_assign_str(&cfg->LOG_FILE, v);
+      set_msg_log_path(cfg->LOG_FILE);
   }
   else if (strcmp(k, CFG_KEEPALIVE) == 0) {
     r = config_param_val_int_pos(v, &cfg->TCP_KEEPALIVE_TIME);
@@ -1154,6 +1167,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     { CFG_MULTI, 1, NULL, 'm' },
     { CFG_WORKERS, 1, NULL, 'n' },
     { CFG_BACKLOG, 1, NULL, 'B' },
+    { CFG_LOG_FILE, 1, NULL, 'G' },
 #ifdef USE_SHARED_CACHE
     { CFG_SHARED_CACHE, 1, NULL, 'C' },
     { CFG_SHARED_CACHE_LISTEN, 1, NULL, 'U' },
@@ -1182,7 +1196,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     int option_index = 0;
     c = getopt_long(
       argc, argv,
-      "c:e:Ob:f:m:n:B:C:U:P:M:k:r:u:g:qstVh",
+      "c:e:Ob:f:m:n:B:G:C:U:P:M:k:r:u:g:qstVh",
       long_options, &option_index
     );
 
@@ -1228,6 +1242,9 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
       case 'B':
         config_param_validate(CFG_BACKLOG, optarg, cfg, NULL, 0);
+        break;
+      case 'G':
+        config_param_validate(CFG_LOG_FILE, optarg, cfg, NULL, 0);
         break;
 #ifdef USE_SHARED_CACHE
       case 'C':
