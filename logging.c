@@ -99,9 +99,13 @@ void msg(const int level, const char *fmt, ...) {
 
     assert(sz == sizeof(buf));
 
-    const int ret = write(fd, buf, sz);
-    if (ret < isize) {
-        // FIXME: What to do here?
+    for (size_t i = 0; i < sizeof(buf); ) {
+        const ssize_t ret = write(fd, buf, sz);
+        if (ret < 0) {
+            return;
+        }
+        assert(ret > 0);
+        i += (size_t)ret;
     }
 
     if (file_fd >= 0) {
