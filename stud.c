@@ -200,6 +200,7 @@ typedef struct proxystate {
         exit(1);                     \
     } while(0)
 
+// Dump error messages from stud as a next log message
 static inline void msg_ssl(void) {
     BIO *bio = BIO_new(BIO_s_mem ());
     ERR_print_errors(bio);
@@ -208,6 +209,31 @@ static inline void msg_ssl(void) {
     assert((ssize_t)len >= 0 && (int)len == (ssize_t)len);
     MSG('E', "OpenSSL: %.*s", (int)len, buf);
     BIO_free(bio);
+}
+
+#define DUMP_ADDR_LEN ((INET_ADDRSTRLEN > INET6_ADDRSTRLEN ? INET_ADDRSTRLEN : INET6_ADDRSTRLEN) + 1 + 6 + 1)
+static const char *dump_addr(char *dst, const size_t len, const struct sockaddr_storage *ss) {
+    if (ss->ss_family == AF_INET) {
+        char buf4[INET_ADDRSTRLEN];
+        const struct in_addr *addr4 = &((struct sockaddr_in*)ss)->sin_addr;
+        const unsigned port = (unsigned)ntohs(((struct sockaddr_in*)ss)->sin_port);
+        inet_ntop(AF_INET, addr4, buf4, sizeof(*addr4));
+        const int r = snprintf(dst, len, "%s:%u", buf4, port);
+        if (r > 0 && (unsigned)r < len) {
+            return dst;
+        }
+    }
+    if (ss->ss_family == AF_INET6) {
+        char buf6[INET6_ADDRSTRLEN];
+        const struct in6_addr *addr6 = &((struct sockaddr_in6*)ss)->sin6_addr;
+        const unsigned port = (unsigned)ntohs(((struct sockaddr_in6*)ss)->sin6_port);
+        inet_ntop(AF_INET6, addr6, buf6, sizeof(*addr6));
+        const int r = snprintf(dst, len, "%s:%u", buf6, port);
+        if (r > 0 && (unsigned)r < len) {
+            return dst;
+        }
+    }
+    return "???.???.???.???:??";
 }
 
 #define NULL_DEV "/dev/null"
@@ -946,6 +972,8 @@ static void safe_enable_io(proxystate *ps, ev_io *w) {
  * has both up and down connected */
 static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
     if (ps->want_shutdown || req == SHUTDOWN_HARD) {
+        MSG('D', "Releasing proxystate at slot %d", ps->index);
+
         ev_io_stop(loop, &ps->ev_w_ssl);
         ev_io_stop(loop, &ps->ev_r_ssl);
         ev_io_stop(loop, &ps->ev_w_handshake);
@@ -1381,6 +1409,10 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) loop;
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
+
+    listener_socket_desc *listener_socket = (void*)w;
+    const int index = listener_socket - listener_sockets;
+
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
     if (client == -1) {
         switch (errno) {
@@ -1394,6 +1426,11 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         }
         return;
     }
+
+    do {
+        char buf[DUMP_ADDR_LEN];
+        MSG('I', "Accepted connection at slot %d from: %s", index, dump_addr(buf, sizeof(buf), &addr));
+    } while(0);
 
     int flag = 1;
     int ret = setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
@@ -1411,11 +1448,9 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    listener_socket_desc *listener_socket = (void*)w;
     if (listener_socket->check != LISTENER_SOCKET_CHECK) {
         DIE("Socket descriptor mishmash");
     }
-    const int index = listener_socket - listener_sockets;
 
     const int back = create_back_socket();
 
@@ -1435,6 +1470,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     SSL_set_accept_state(ssl);
     SSL_set_fd(ssl, client);
 
+    MSG('D', "Craeting proxystate for slot: %d", index);
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
     if (!ps) {
         MSG('E', "{Cannot allocate memory for proxystate} : %m");
@@ -1510,7 +1546,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) loop;
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
-    int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
+    int client = accept(w->fd, (struct sockaddr *)&addr, &sl);
     if (client == -1) {
         switch (errno) {
         case EMFILE:
