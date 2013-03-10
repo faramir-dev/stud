@@ -213,11 +213,14 @@ static inline void msg_ssl(void) {
 
 #define DUMP_ADDR_LEN ((INET_ADDRSTRLEN > INET6_ADDRSTRLEN ? INET_ADDRSTRLEN : INET6_ADDRSTRLEN) + 1 + 6 + 1)
 static const char *dump_addr(char *dst, const size_t len, const struct sockaddr_storage *ss) {
+    static const char def[] = "???.???.???.???:????";
     if (ss->ss_family == AF_INET) {
         char buf4[INET_ADDRSTRLEN];
         const struct in_addr *addr4 = &((struct sockaddr_in*)ss)->sin_addr;
         const unsigned port = (unsigned)ntohs(((struct sockaddr_in*)ss)->sin_port);
-        inet_ntop(AF_INET, addr4, buf4, sizeof(*addr4));
+        if (NULL == inet_ntop(AF_INET, addr4, buf4, sizeof(buf4))) {
+            return def;
+        }
         const int r = snprintf(dst, len, "%s:%u", buf4, port);
         if (r > 0 && (unsigned)r < len) {
             return dst;
@@ -227,13 +230,15 @@ static const char *dump_addr(char *dst, const size_t len, const struct sockaddr_
         char buf6[INET6_ADDRSTRLEN];
         const struct in6_addr *addr6 = &((struct sockaddr_in6*)ss)->sin6_addr;
         const unsigned port = (unsigned)ntohs(((struct sockaddr_in6*)ss)->sin6_port);
-        inet_ntop(AF_INET6, addr6, buf6, sizeof(*addr6));
+        if (NULL == inet_ntop(AF_INET6, addr6, buf6, sizeof(buf6))) {
+            return def;
+        }
         const int r = snprintf(dst, len, "%s:%u", buf6, port);
         if (r > 0 && (unsigned)r < len) {
             return dst;
         }
     }
-    return "???.???.???.???:??";
+    return def;
 }
 
 #define NULL_DEV "/dev/null"
@@ -323,8 +328,9 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
 static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct sockaddr *dst, size_t *p_dst_size, const int index) {
     switch (src->sa_family) {
     case AF_INET: {
-        if (sizeof(struct sockaddr_in) > *p_dst_size)
+        if (sizeof(struct sockaddr_in) > *p_dst_size) {
             DIE("Socket addr mishmash");
+        }
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -332,8 +338,9 @@ static void addr_inc_port(struct sockaddr *src, const size_t src_size, struct so
         }
         break;
     case AF_INET6: {
-        if (sizeof(struct sockaddr_in6) > *p_dst_size)
+        if (sizeof(struct sockaddr_in6) > *p_dst_size) {
             DIE("Socket addr mishmash");
+        }
         size_t dst_size = *p_dst_size = sizeof(struct sockaddr_in6);
         assert(src_size == dst_size);
         memcpy(dst, src, dst_size);
@@ -905,14 +912,14 @@ static void create_main_sockets() {
                                     &hints, &ai);
     if (gai_err != 0) {
         DIE("{getaddrinfo}: [%s]", gai_strerror(gai_err));
-        exit(1);
     }
     for (int i = 0; i < CONFIG->MULTI; ++i) {
         listener_sockets[i].check = LISTENER_SOCKET_CHECK;
         int s = listener_sockets[i].fd = socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
 
-        if (s == -1)
+        if (s == -1) {
           DIE("{socket: main} : %m");
+        }
 
         int t = 1;
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &t, sizeof(int));
@@ -972,7 +979,7 @@ static void safe_enable_io(proxystate *ps, ev_io *w) {
  * has both up and down connected */
 static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
     if (ps->want_shutdown || req == SHUTDOWN_HARD) {
-        MSG('D', "Releasing proxystate at slot %d", ps->index);
+        MSG('D', "Releasing proxystate at slot %d, %p", ps->index, ps);
 
         ev_io_stop(loop, &ps->ev_w_ssl);
         ev_io_stop(loop, &ps->ev_r_ssl);
@@ -1006,11 +1013,11 @@ static void handle_socket_errno(proxystate *ps, int backend) {
         return;
 
     if (errno == ECONNRESET)
-        DIE("{%s} Connection reset by peer", backend ? "backend" : "client");
+        MSG('E', "{%s} Connection reset by peer", backend ? "backend" : "client");
     else if (errno == ETIMEDOUT)
-        DIE("{%s} Connection to backend timed out", backend ? "backend" : "client");
+        MSG('E', "{%s} Connection to backend timed out", backend ? "backend" : "client");
     else if (errno == EPIPE)
-        DIE("{%s} Broken pipe to backend (EPIPE)", backend ? "backend" : "client");
+        MSG('E', "{%s} Broken pipe to backend (EPIPE)", backend ? "backend" : "client");
     else
         MSG('E', "{backend} [errno] : %m");
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
@@ -1054,7 +1061,7 @@ static void clear_read(struct ev_loop *loop, ev_io *w, int revents) {
             safe_enable_io(ps, &ps->ev_w_ssl);
     }
     else if (t == 0) {
-        MSG('I', "{%s} Connection closed\n", fd == ps->fd_down ? "backend" : "client");
+        MSG('I', "{%s} Connection closed", fd == ps->fd_down ? "backend" : "client");
         shutdown_proxy(ps, SHUTDOWN_CLEAR);
     }
     else {
@@ -1311,18 +1318,19 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
 /* Handle a socket error condition passed to us from OpenSSL */
 static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
     if (err == SSL_ERROR_ZERO_RETURN) {
-        DIE("{%s} Connection closed (in data)", backend ? "backend" : "client");
+        MSG('E', "{%s} Connection closed (in data)", backend ? "backend" : "client");
     }
     else if (err == SSL_ERROR_SYSCALL) {
         if (errno == 0) {
-            DIE("{%s} Connection closed (in data)", backend ? "backend" : "client");
+            MSG('E', "{%s} Connection closed (in data)", backend ? "backend" : "client");
         }
         else {
             MSG('E', "{%s} [errno] : %m", backend ? "backend" : "client");
         }
     }
-    else
-        DIE("{%s} Unexpected SSL_read error: %d", backend ? "backend" : "client" , err);
+    else {
+        MSG('E', "{%s} Unexpected SSL_read error: %d", backend ? "backend" : "client" , err);
+    }
     shutdown_proxy(ps, SHUTDOWN_SSL);
 }
 
@@ -1470,7 +1478,6 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     SSL_set_accept_state(ssl);
     SSL_set_fd(ssl, client);
 
-    MSG('D', "Craeting proxystate for slot: %d", index);
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
     if (!ps) {
         MSG('E', "{Cannot allocate memory for proxystate} : %m");
@@ -1478,6 +1485,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         close(back);
         return;
     }
+    MSG('D', "Craeted proxystate for slot: %d, mem: %p", index, ps);
 
     ps->index = index;
     ps->fd_up = client;
@@ -1683,7 +1691,6 @@ static void handle_connections() {
 
     ev_loop(loop, 0);
     DIE("{core} Child %d exiting.", child_num);
-    exit(1);
 }
 
 void change_root() {
@@ -1754,7 +1761,6 @@ void start_children(int start_index, int count) {
         int pid = fork();
         if (pid == -1) {
             DIE("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
-            exit(1);
         }
         else if (pid == 0) { /* child */
             handle_connections();
@@ -1824,7 +1830,7 @@ static void sigh_terminate (int __attribute__ ((unused)) signo) {
         for (i = 0; i < CONFIG->NCORES; i++) {
             /* MSG('I', "Stopping worker pid %d.\n", child_pids[i]); */
             if (child_pids[i] > 1 && kill(child_pids[i], SIGTERM) != 0) {
-                DIE("{core} Unable to send SIGTERM to worker pid %d: %s\n", child_pids[i], strerror(errno));
+                DIE("{core} Unable to send SIGTERM to worker pid %d: %m", child_pids[i]);
             }
         }
         /* MSG('I', "Shutdown complete."); */
@@ -1859,11 +1865,9 @@ void init_signals() {
     act.sa_handler = sigh_terminate;
     if (sigaction(SIGINT, &act, NULL) < 0) {
         DIE("Unable to register SIGINT signal handler: %m");
-        exit(1);
     }
     if (sigaction(SIGTERM, &act, NULL) < 0) {
         DIE("Unable to register SIGTERM signal handler: %m");
-        exit(1);
     }
 }
 
@@ -1871,14 +1875,12 @@ void daemonize () {
     /* go to root directory */
     if (chdir("/") != 0) {
         DIE("Unable change directory to /: %m");
-        exit(1);
     }
 
     /* let's make some children, baby :) */
     pid_t pid = fork();
     if (pid < 0) {
         DIE("Unable to daemonize: fork failed: %m");
-        exit(1);
     }
 
     /* am i the parent? */
@@ -1928,8 +1930,6 @@ void openssl_check_version() {
             (unsigned long int) OPENSSL_VERSION_NUMBER,
             (unsigned long int) openssl_version
         );
-        /* now what? exit now? */
-        /* exit(1); */
     }
 
     MSG('I', "{core} Using OpenSSL version %lx.", (unsigned long int) openssl_version);
