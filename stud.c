@@ -294,7 +294,6 @@ static int init_dh(SSL_CTX *ctx, const char *cert) {
 
     bio = BIO_new_file(cert, "r");
     if (!bio) {
-        // FIXME: Log the errors in normal way...
         msg_ssl();
         return -1;
     }
@@ -502,8 +501,7 @@ static int create_shcupd_socket() {
 
                 memset(&ifr, 0, sizeof(ifr));
                 if (strlen(CONFIG->SHCUPD_MCASTIF) > IFNAMSIZ) {
-                    MSG('E', "Error iface name is too long [%s]",CONFIG->SHCUPD_MCASTIF);
-                    exit(1);
+                    DIE('E', "Error iface name is too long [%s]",CONFIG->SHCUPD_MCASTIF);
                 }
 
                 memcpy(ifr.ifr_name, CONFIG->SHCUPD_MCASTIF, strlen(CONFIG->SHCUPD_MCASTIF));
@@ -733,7 +731,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
 
 #ifndef OPENSSL_NO_TLSEXT
     if (!SSL_CTX_set_tlsext_servername_callback(ctx, sni_switch_ctx)) {
-        DIE("Error setting up SNI support");
+        DIE("Error setting up SNI support"); // FIXME: Use ERR('E', ...) here?
     }
 #endif /* OPENSSL_NO_TLSEXT */
 
@@ -803,7 +801,7 @@ void init_openssl() {
         f = BIO_new(BIO_s_file());
         // TODO: error checking
         if (!BIO_read_filename(f, cf->CERT_FILE)) {
-            DIE("Could not read cert '%s'", cf->CERT_FILE);
+            MSG('E', "Could not read cert '%s'", cf->CERT_FILE);
         }
         x509 = PEM_read_bio_X509_AUX(f, NULL, NULL, NULL);
         BIO_free(f);
@@ -828,7 +826,7 @@ void init_openssl() {
         X509_NAME *x509_name = X509_get_subject_name(x509);
         i = X509_NAME_get_index_by_NID(x509_name, NID_commonName, -1);
         if (i < 0) {
-            DIE("Could not find Subject Alternative Names or a CN on cert %s", cf->CERT_FILE);
+            MSG('E', "Could not find Subject Alternative Names or a CN on cert %s", cf->CERT_FILE);
         }
         X509_NAME_ENTRY *x509_entry = X509_NAME_get_entry(x509_name, i);
         PUSH_CTX(x509_entry->value, ctx);
@@ -849,7 +847,7 @@ void init_openssl() {
                 msg_ssl();
                 exit(1);
             }
-            MSG('I', "{core} will use OpenSSL engine %s.", ENGINE_get_id(e));
+            MSG('I', "{core} will use OpenSSL engine %s", ENGINE_get_id(e));
             ENGINE_finish(e);
             ENGINE_free(e);
         }
@@ -1012,14 +1010,18 @@ static void handle_socket_errno(proxystate *ps, int backend) {
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
         return;
 
-    if (errno == ECONNRESET)
+    if (errno == ECONNRESET) {
         MSG('E', "{%s} Connection reset by peer", backend ? "backend" : "client");
-    else if (errno == ETIMEDOUT)
+    }
+    else if (errno == ETIMEDOUT) {
         MSG('E', "{%s} Connection to backend timed out", backend ? "backend" : "client");
-    else if (errno == EPIPE)
+    }
+    else if (errno == EPIPE) {
         MSG('E', "{%s} Broken pipe to backend (EPIPE)", backend ? "backend" : "client");
-    else
+    }
+    else {
         MSG('E', "{backend} [errno] : %m");
+    }
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
 
@@ -1558,11 +1560,11 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     if (client == -1) {
         switch (errno) {
         case EMFILE:
-            DIE("{client} accept() failed; too many open files for this process");
+            MSG('E', "{client} accept() failed; too many open files for this process");
             break;
 
         case ENFILE:
-            DIE("{client} accept() failed; too many open files for this system");
+            MSG('E', "{client} accept() failed; too many open files for this system");
             break;
 
         default:
@@ -1690,7 +1692,7 @@ static void handle_connections() {
     }
 
     ev_loop(loop, 0);
-    DIE("{core} Child %d exiting.", child_num);
+    DIE("{core} Child %d exiting", child_num);
 }
 
 void change_root() {
@@ -1760,7 +1762,7 @@ void start_children(int start_index, int count) {
     for (child_num = start_index; child_num < start_index + count; child_num++) {
         int pid = fork();
         if (pid == -1) {
-            DIE("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
+            DIE("{core} fork() failed: %m; Goodbye cruel world!");
         }
         else if (pid == 0) { /* child */
             handle_connections();
@@ -1784,7 +1786,7 @@ void replace_child_with_pid(pid_t pid) {
         }
     }
 
-    DIE("Cannot find index for child pid %d", pid);
+    MSG('E', "Cannot find index for child pid %d", pid);
 }
 
 /* Manage status changes in child processes */
@@ -1802,7 +1804,7 @@ static void do_wait(int __attribute__ ((unused)) signo) {
             MSG('W', "{core} Interrupted wait");
         }
         else {
-            MSG('E', "wait : %m");
+            DIE("wait : %m");
         }
     }
     else {
@@ -1823,17 +1825,17 @@ static void sigh_terminate (int __attribute__ ((unused)) signo) {
 
     /* are we the master? */
     if (getpid() == master_pid) {
-        MSG('I', "{core} Received signal %d, shutting down.", signo);
+        MSG('I', "{core} Received signal %d, shutting down", signo);
 
         /* kill all children */
         int i;
         for (i = 0; i < CONFIG->NCORES; i++) {
             /* MSG('I', "Stopping worker pid %d.\n", child_pids[i]); */
             if (child_pids[i] > 1 && kill(child_pids[i], SIGTERM) != 0) {
-                DIE("{core} Unable to send SIGTERM to worker pid %d: %m", child_pids[i]);
+                MSG('E', "{core} Unable to send SIGTERM to worker pid %d: %m", child_pids[i]);
             }
         }
-        /* MSG('I', "Shutdown complete."); */
+        MSG('I', "Shutdown complete");
     }
 
     /* this is it, we're done... */
@@ -1915,7 +1917,7 @@ void daemonize () {
         DIE("Unable to create new session, setsid(2) failed: %m :: %d", s);
     }
 
-    MSG('I', "Successfully daemonized as pid %d.", getpid());
+    MSG('I', "Successfully daemonized as pid %d", getpid());
 }
 
 void openssl_check_version() {
