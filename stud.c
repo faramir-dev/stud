@@ -973,9 +973,23 @@ static void safe_enable_io(proxystate *ps, ev_io *w) {
         ev_io_start(loop, w);
 }
 
+static const char *dump_sh_req(const SHUTDOWN_REQUESTOR req) {
+    switch (req) {
+    case SHUTDOWN_HARD:
+        return "SHUTDOWN_HARD";
+    case SHUTDOWN_CLEAR:
+        return "SHUTDOWN_CLEAR";
+    case SHUTDOWN_SSL:
+        return "SHUTDOWN_SSL";
+    }
+    return "???";
+}
+
 /* Only enable a libev ev_io event if the proxied connection still
  * has both up and down connected */
 static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
+    MSG('D', "shutdown_proxy: %p; %d; %s", ps, !!ps->want_shutdown, dump_sh_req(req));
+
     if (ps->want_shutdown || req == SHUTDOWN_HARD) {
         MSG('D', "Releasing proxystate at slot %d, %p", ps->index, ps);
 
@@ -991,7 +1005,8 @@ static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
         close(ps->fd_up);
         close(ps->fd_down);
 
-        SSL_set_shutdown(ps->ssl, SSL_SENT_SHUTDOWN);
+//        SSL_set_shutdown(ps->ssl, SSL_SENT_SHUTDOWN);
+        SSL_set_shutdown(ps->ssl, SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
         SSL_free(ps->ssl);
 
         free(ps);
@@ -1063,7 +1078,7 @@ static void clear_read(struct ev_loop *loop, ev_io *w, int revents) {
             safe_enable_io(ps, &ps->ev_w_ssl);
     }
     else if (t == 0) {
-        MSG('I', "{%s} Connection closed", fd == ps->fd_down ? "backend" : "client");
+        MSG('I', "{%s} Connection closed [%p]", fd == ps->fd_down ? "backend" : "client", ps);
         shutdown_proxy(ps, SHUTDOWN_CLEAR);
     }
     else {
@@ -1084,7 +1099,7 @@ static void clear_write(struct ev_loop *loop, ev_io *w, int revents) {
 
     char *next = ringbuffer_read_next(&ps->ring_ssl2clear, &sz);
     t = send(fd, next, sz, MSG_NOSIGNAL);
-
+MSG('D', "[%p] clear_write: send(%d) == %d", ps, sz, t);
     if (t > 0) {
         if (t == sz) {
             ringbuffer_read_pop(&ps->ring_ssl2clear);
@@ -1346,9 +1361,9 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
         ev_io_stop(loop, &ps->ev_r_ssl);
         return;
     }
-    char * buf = ringbuffer_write_ptr(&ps->ring_ssl2clear);
+    char *buf = ringbuffer_write_ptr(&ps->ring_ssl2clear);
     t = SSL_read(ps->ssl, buf, RING_DATA_LEN);
-
+MSG('D', "[%p] ssl_read() == %d", ps, t);
     /* Fix CVE-2009-3555. Disable reneg if started by client. */
     if (ps->renegotiation) {
         shutdown_proxy(ps, SHUTDOWN_SSL);
@@ -1937,6 +1952,13 @@ void openssl_check_version() {
     MSG('I', "{core} Using OpenSSL version %lx.", (unsigned long int) openssl_version);
 }
 
+static void disable_compression(void) {
+    SSL_CTX *tls_ctx;
+    STACK_OF(SSL_COMP)* compression ;
+    compression = SSL_COMP_get_compression_methods();
+    sk_SSL_COMP_zero(compression);
+}
+
 /* Process command line args, create the bound socket,
  * spawn child (worker) processes, and respawn if any die */
 int main(int argc, char **argv) {
@@ -1955,6 +1977,8 @@ int main(int argc, char **argv) {
     init_signals();
 
     init_globals();
+
+    disable_compression();
 
     create_main_sockets();
 

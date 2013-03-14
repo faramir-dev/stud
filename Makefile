@@ -7,8 +7,8 @@ PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
 MANDIR  = $(PREFIX)/share/man
 
-CFLAGS  = -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -I/usr/local/include
-LDFLAGS = -lssl -lcrypto -lev -L/usr/local/lib
+CFLAGS  = -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -I/usr/local/include -I/home/faramir/opt/openssl-1.0.1e/include
+LDFLAGS = -L/home/faramir/opt/openssl-1.0.1e/lib -Xlinker -Bstatic -lssl -lcrypto  -Xlinker -Bdynamic -lev -ldl -L/usr/local/lib
 OBJS    = stud.o ringbuffer.o configuration.o logging.o
 
 all: realall
