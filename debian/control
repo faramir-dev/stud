@@ -10,7 +10,8 @@ Package: stud
 Section: universe/net
 Priority: optional
 Architecture: any
-Depends: libc6 (>= 2.4), libev4 (>= 1:4.04), libssl0.9.8 (>= 0.9.8k-1) | libssl1.0.0 (>= 1.0.0e-1)
+#Depends: libc6 (>= 2.4), libev4 (>= 1:4.04), libssl0.9.8 (>= 0.9.8k-1) | libssl1.0.0 (>= 1.0.0e-1)
+Depends: libc6 (>= 2.4)
 # Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: The Scalable TLS Unwrapping Daemon
  stud is a network proxy that terminates TLS/SSL connections and forwards

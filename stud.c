@@ -1978,7 +1978,7 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-    disable_compression();
+//    disable_compression();
 
     create_main_sockets();
 

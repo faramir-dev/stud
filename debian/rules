@@ -7,7 +7,10 @@
 override_dh_auto_configure:
 override_dh_auto_install:
 override_dh_auto_build:
-	make #USE_SHARED_CACHE=1
+	rm -fr compile-openssl
+	mkdir -p compile-openssl
+	cd compile-openssl && wget 'ftp://ftp.openssl.org/source/openssl-1.0.1e.tar.gz' -O openssl.tar.gz && tar xvf openssl.tar.gz && cd openssl-1.0.1e && ./config -static --prefix=$(CURDIR)/compile-openssl/opt && make && make install
+	make OPENSSL_PATH=$(CURDIR)/compile-openssl/opt #USE_SHARED_CACHE=1
 
 #auto clean is insufficient, clean up some stuff manually
 override_dh_clean: 
@@ -16,3 +19,4 @@ override_dh_clean:
 	rm -f *.o
 	rm -f ebtree/*.o
 	rm -f ebtree/*.a
+	rm -fr compile-openssl

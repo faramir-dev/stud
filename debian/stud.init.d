@@ -37,6 +37,8 @@ do_chroot() {
 	oldumask=$(umask)
 	umask 022
 	[ -d $CHROOT ] || mkdir -p $CHROOT
+	mkdir -p $CHROOT/log
+	chown $USER $CHROOT/log
 	umask $oldumask
 }
 
@@ -59,7 +61,7 @@ do_start()
 			else
 				start-stop-daemon --start --quiet --pidfile $PIDFILE \
 					--exec $DAEMON -b -m -- \
-					$COMMON_OPTIONS $OPTIONS $CERT \
+					--log-file "$CHROOT/log/stud.log" $COMMON_OPTIONS $OPTIONS $CERT \
 				|| {
 					[ "$VERBOSE" != no ] && log_progress_msg "[Failed: ${BASE}]"
 					return 2

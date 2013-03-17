@@ -1,15 +1,22 @@
 # [g]make USE_xxxx=1
 #
 # USE_SHARED_CACHE   :   enable/disable a shared session cache (disabled by default)
+# OPENSSL_PATH   :   path to OpenSSL
 
 DESTDIR =
 PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
 MANDIR  = $(PREFIX)/share/man
 
-CFLAGS  = -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -I/usr/local/include -I/home/faramir/opt/openssl-1.0.1e/include
-LDFLAGS = -L/home/faramir/opt/openssl-1.0.1e/lib -Xlinker -Bstatic -lssl -lcrypto  -Xlinker -Bdynamic -lev -ldl -L/usr/local/lib
 OBJS    = stud.o ringbuffer.o configuration.o logging.o
+
+ifneq ($(OPENSSL_PATH),)
+CFLAGS += -I$(OPENSSL_PATH)/include
+LDFLAGS += -L$(OPENSSL_PATH)/lib
+endif
+
+CFLAGS  += -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -I/usr/local/include
+LDFLAGS += -Xlinker -Bstatic -lssl -lcrypto -lev -lm -Xlinker -Bdynamic -ldl -L/usr/local/lib
 
 all: realall
 
