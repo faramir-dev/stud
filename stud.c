@@ -988,11 +988,7 @@ static const char *dump_sh_req(const SHUTDOWN_REQUESTOR req) {
 /* Only enable a libev ev_io event if the proxied connection still
  * has both up and down connected */
 static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
-    MSG('D', "shutdown_proxy: %p; %d; %s", ps, !!ps->want_shutdown, dump_sh_req(req));
-
     if (ps->want_shutdown || req == SHUTDOWN_HARD) {
-        MSG('D', "Releasing proxystate at slot %d, %p", ps->index, ps);
-
         ev_io_stop(loop, &ps->ev_w_ssl);
         ev_io_stop(loop, &ps->ev_r_ssl);
         ev_io_stop(loop, &ps->ev_w_handshake);
@@ -1099,7 +1095,6 @@ static void clear_write(struct ev_loop *loop, ev_io *w, int revents) {
 
     char *next = ringbuffer_read_next(&ps->ring_ssl2clear, &sz);
     t = send(fd, next, sz, MSG_NOSIGNAL);
-MSG('D', "[%p] clear_write: send(%d) == %d", ps, sz, t);
     if (t > 0) {
         if (t == sz) {
             ringbuffer_read_pop(&ps->ring_ssl2clear);
@@ -1363,7 +1358,6 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     }
     char *buf = ringbuffer_write_ptr(&ps->ring_ssl2clear);
     t = SSL_read(ps->ssl, buf, RING_DATA_LEN);
-MSG('D', "[%p] ssl_read() == %d", ps, t);
     /* Fix CVE-2009-3555. Disable reneg if started by client. */
     if (ps->renegotiation) {
         shutdown_proxy(ps, SHUTDOWN_SSL);
