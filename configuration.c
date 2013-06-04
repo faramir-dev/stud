@@ -40,6 +40,7 @@
 #define CFG_CHROOT "chroot"
 #define CFG_USER "user"
 #define CFG_GROUP "group"
+#define CFG_DISABLE_COMPRESSION "disable-compression"
 #define CFG_QUIET "quiet"
 #define CFG_SYSLOG "syslog"
 #define CFG_SYSLOG_FACILITY "syslog-facility"
@@ -146,6 +147,7 @@ stud_config * config_new (void) {
   r->SHCUPD_MCASTTTL    = NULL;
 #endif
 
+  r->DISABLE_COMPRESSION = 0;
   r->QUIET              = 0;
   r->SYSLOG             = 0;
   r->SYSLOG_FACILITY    = LOG_DAEMON;
@@ -646,6 +648,9 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
         cfg->GID = grp->gr_gid;
       }
     }
+  }
+  else if (strcmp(k, CFG_DISABLE_COMPRESSION) == 0) {
+    r = config_param_val_bool(v, &cfg->DISABLE_COMPRESSION);
   }
   else if (strcmp(k, CFG_QUIET) == 0) {
     r = config_param_val_bool(v, &cfg->QUIET);
@@ -1179,6 +1184,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     { CFG_USER, 1, NULL, 'u' },
     { CFG_GROUP, 1, NULL, 'g' },
     { CFG_QUIET, 0, NULL, 'q' },
+    { CFG_DISABLE_COMPRESSION, 0, NULL, 'Z' },
     { CFG_SYSLOG, 0, NULL, 's' },
     { CFG_SYSLOG_FACILITY, 1, NULL, CFG_PARAM_SYSLOG_FACILITY },
     { CFG_DAEMON, 0, &cfg->DAEMONIZE, 1 },
@@ -1271,6 +1277,9 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
       case 'g':
         config_param_validate(CFG_GROUP, optarg, cfg, NULL, 0);
+        break;
+      case 'Z':
+        config_param_validate(CFG_DISABLE_COMPRESSION, CFG_BOOL_ON, cfg, NULL, 0);
         break;
       case 'q':
         config_param_validate(CFG_QUIET, CFG_BOOL_ON, cfg, NULL, 0);

@@ -1972,7 +1972,10 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-//    disable_compression();
+    if (CONFIG->DISABLE_COMPRESSION) {
+        msg('I', "Disabling compression");
+        disable_compression();
+    }
 
     create_main_sockets();
 
