@@ -1973,7 +1973,7 @@ int main(int argc, char **argv) {
     init_globals();
 
     if (CONFIG->DISABLE_COMPRESSION) {
-        msg('I', "Disabling compression");
+        msg('I', "{core} Disabling compression");
         disable_compression();
     }
 
